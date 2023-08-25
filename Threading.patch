@@ -1,13 +1,15 @@
 diff --git a/Makefile b/Makefile
-index 39a99d7..a822569 100644
+index 39a99d7..d9e41ac 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -132,6 +132,8 @@ UPROGS=\
+@@ -132,6 +132,10 @@ UPROGS=\
  	$U/_grind\
  	$U/_wc\
  	$U/_zombie\
 +	$U/_threads\
 +	$U/_producer_consumer\
++	$U/_semtest\
++	$U/_condtest\
  
  fs.img: mkfs/mkfs README $(UPROGS)
  	mkfs/mkfs fs.img README $(UPROGS)
@@ -39,7 +41,7 @@ index a3c962b..84dd3df 100644
  // plic.c
  void            plicinit(void);
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..434f609 100644
+index 959b778..6372774 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -10,6 +10,8 @@ struct cpu cpus[NCPU];
@@ -344,7 +346,7 @@ index 959b778..434f609 100644
 +  uint64 base = PGROUNDDOWN(chan);
 +  uint64 add = page + chan - base;
 +
-+  if(__sync_lock_test_and_set((int *)add, val) == val){
++  if(__sync_bool_compare_and_swap(&add, val, val)){
 +    sleep((void *)add, &memlocks[p->mem_id].memory_lock);
 +    release(&memlocks[p->mem_id].memory_lock);
 +    return;
@@ -614,12 +616,65 @@ index 9f69783..07e08dd 100644
  // mark a PTE invalid for user access.
  // used by exec for the user stack guard page.
  void
+diff --git a/user/condtest.c b/user/condtest.c
+new file mode 100644
+index 0000000..ee6570c
+--- /dev/null
++++ b/user/condtest.c
+@@ -0,0 +1,46 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++#include "user/thread_mutex.h"
++#include "user/thread_condvar.h"
++
++struct thread_condvar cv;
++struct thread_mutex mtx;
++
++void thread1(void *)
++{
++    printf("Started to work\n");
++    printf("But could not\n");
++    thread_cond_signal(&cv);
++    thread_mutex_lock(&mtx);
++    thread_cond_wait(&cv, &mtx);
++    thread_mutex_unlock(&mtx);
++    printf("Finish\n");
++    thread_exit();
++}
++
++void thread2(void *)
++{
++    thread_mutex_lock(&mtx);
++    thread_cond_wait(&cv, &mtx);
++    thread_mutex_unlock(&mtx);
++    printf("I am working\n");
++    for(int i=0; i<10; i++){
++        printf("Waking in %d\n", i);
++    }
++    thread_cond_signal(&cv);
++    thread_exit();
++}
++
++void main(void)
++{
++    thread_cond_init(&cv);
++    thread_mutex_init(&mtx);
++    void * stack1 = malloc(4096);
++    void * stack2 = malloc(4096);
++    int t1 = thread_create(thread1, 0, stack1);
++    int t2 = thread_create(thread2, 0, stack2);
++    thread_join(t1);
++    thread_join(t2);
++    exit(1);
++}
+\ No newline at end of file
 diff --git a/user/producer_consumer.c b/user/producer_consumer.c
 new file mode 100644
-index 0000000..ced73e9
+index 0000000..3f1aa16
 --- /dev/null
 +++ b/user/producer_consumer.c
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,127 @@
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include "user/user.h"
@@ -724,31 +779,6 @@ index 0000000..ced73e9
 +    thread_exit();
 +}
 +
-+struct thread_sem sems, semt;
-+volatile int i = 30;
-+
-+void s()
-+{
-+	while(i){
-+		thread_sem_wait(&sems);
-+		printf("s");
-+		i--;
-+		thread_sem_post(&semt);
-+	}
-+	thread_exit();
-+}
-+
-+void t()
-+{
-+	while(i){
-+	thread_sem_wait(&semt);
-+	printf("t");
-+	i--;
-+	thread_sem_post(&sems);
-+	}
-+	thread_exit();
-+}
-+
 +void main(void)
 +{	
 +	
@@ -769,13 +799,95 @@ index 0000000..ced73e9
 +
 +  	thread_join(thread1);
 +  	thread_join(thread2);	
-+    
++
 +	exit(1);
++}
+\ No newline at end of file
+diff --git a/user/semtest.c b/user/semtest.c
+new file mode 100644
+index 0000000..05e0bbc
+--- /dev/null
++++ b/user/semtest.c
+@@ -0,0 +1,75 @@
++#include "kernel/types.h"
++#include "user/user.h"
++#include "user/thread_mutex.h"
++#include "user/thread_condvar.h"
++#include "user/thread_semaphore.h"
++
++
++struct thread_sem p, q, r;
++int c;
++
++void new_line() {
++	for (int i = 0; i < 3; i++) {
++		if (__sync_bool_compare_and_swap(&c, i, (i + 1) % 3)) {
++			if (i == 2) {
++		    printf("\n");
++			}
++			return;
++		}
++	}
++}
++
++void thread_p(void*) {
++  for(;;) {
++    thread_sem_wait(&p);
++    thread_sem_wait(&p);
++    printf("p");
++    new_line();
++    thread_sem_post(&q);
++    thread_sem_post(&r);
++    // sleep(1);
++  }
++  thread_exit();
++}
++
++void thread_q(void*) {
++  for(;;) {
++    thread_sem_wait(&q);
++    thread_sem_wait(&q);
++    printf("q");
++    new_line();
++    thread_sem_post(&r);
++    thread_sem_post(&p);
++    // sleep(1);
++  }
++  thread_exit();
++}
++
++void thread_r(void*) {
++  for(;;) {
++    thread_sem_wait(&r);
++    thread_sem_wait(&r);
++    printf("r");
++    new_line();
++    thread_sem_post(&p);
++    thread_sem_post(&q);
++    // sleep(1);
++  }
++  thread_exit();
++}
++
++int main() {
++  thread_sem_init(&p, 2);
++  thread_sem_init(&q, 2);
++  thread_sem_init(&r, 2);
++  void *s1 = malloc(4096);
++  void *s2 = malloc(4096);
++  void *s3 = malloc(4096);
++  int th1 = thread_create(thread_p, 0, s1);
++  int th2 = thread_create(thread_q, 0, s2);
++  int th3 = thread_create(thread_r, 0, s3);
++  thread_join(th1);
++  thread_join(th2);
++  thread_join(th3);
++  exit(1);
 +}
 \ No newline at end of file
 diff --git a/user/thread_condvar.h b/user/thread_condvar.h
 new file mode 100644
-index 0000000..6104934
+index 0000000..770c5df
 --- /dev/null
 +++ b/user/thread_condvar.h
 @@ -0,0 +1,38 @@
@@ -795,7 +907,7 @@ index 0000000..6104934
 +    __sync_lock_test_and_set(&cv->locked, 1);
 +    thread_mutex_unlock(m);
 +
-+    while(__sync_lock_test_and_set(&cv->locked, 1) != 0){
++    while(__sync_bool_compare_and_swap(&cv->locked, 1, 1)){
 +        thread_sleep(cv, cv->locked);
 +    }
 +
@@ -806,7 +918,7 @@ index 0000000..6104934
 +thread_cond_signal(struct thread_condvar *cv)
 +{
 +    __sync_synchronize();
-+    __sync_lock_release(&cv->locked);
++    __sync_bool_compare_and_swap(&cv->locked, 1, 0);
 +    thread_wakeup(cv, 0);
 +}
 +
@@ -814,7 +926,7 @@ index 0000000..6104934
 +thread_cond_broadcast(struct thread_condvar *cv)
 +{
 +    __sync_synchronize();
-+    __sync_lock_release(&cv->locked);
++    __sync_bool_compare_and_swap(&cv->locked, 1, 0);
 +    thread_wakeup(cv, 1);
 +}
 \ No newline at end of file
@@ -852,10 +964,10 @@ index 0000000..73e39ce
 \ No newline at end of file
 diff --git a/user/thread_semaphore.h b/user/thread_semaphore.h
 new file mode 100644
-index 0000000..3ffbb25
+index 0000000..31582fd
 --- /dev/null
 +++ b/user/thread_semaphore.h
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,35 @@
 +struct thread_sem {
 +    int count;
 +    struct thread_mutex m;
@@ -874,7 +986,7 @@ index 0000000..3ffbb25
 +thread_sem_wait(struct thread_sem *s)
 +{
 +    thread_mutex_lock(&s->m);
-+    while(__sync_lock_test_and_set(&s->count, s->count) <= 0){
++    while(s->count <= 0){
 +        thread_cond_wait(&s->c, &s->m);
 +    }
 +    __sync_fetch_and_sub(&s->count, 1);
@@ -886,7 +998,9 @@ index 0000000..3ffbb25
 +{
 +    thread_mutex_lock(&s->m);
 +    __sync_fetch_and_add(&s->count, 1);
-+    thread_cond_broadcast(&s->c);
++    if(s->count == 1){
++        thread_cond_broadcast(&s->c);
++    }
 +    thread_mutex_unlock(&s->m);
 +}
 \ No newline at end of file
