@@ -618,10 +618,10 @@ index 9f69783..07e08dd 100644
  void
 diff --git a/user/condtest.c b/user/condtest.c
 new file mode 100644
-index 0000000..ee6570c
+index 0000000..a867613
 --- /dev/null
 +++ b/user/condtest.c
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,48 @@
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include "user/user.h"
@@ -635,8 +635,8 @@ index 0000000..ee6570c
 +{
 +    printf("Started to work\n");
 +    printf("But could not\n");
-+    thread_cond_signal(&cv);
 +    thread_mutex_lock(&mtx);
++    thread_cond_signal(&cv);
 +    thread_cond_wait(&cv, &mtx);
 +    thread_mutex_unlock(&mtx);
 +    printf("Finish\n");
@@ -652,7 +652,9 @@ index 0000000..ee6570c
 +    for(int i=0; i<10; i++){
 +        printf("Waking in %d\n", i);
 +    }
++    thread_mutex_lock(&mtx);
 +    thread_cond_signal(&cv);
++    thread_mutex_unlock(&mtx);
 +    thread_exit();
 +}
 +
@@ -887,28 +889,61 @@ index 0000000..05e0bbc
 \ No newline at end of file
 diff --git a/user/thread_condvar.h b/user/thread_condvar.h
 new file mode 100644
-index 0000000..770c5df
+index 0000000..649502b
 --- /dev/null
 +++ b/user/thread_condvar.h
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,76 @@
++struct condqueue{
++	uint arr[100];
++	int front;
++	int rear;
++	int size;
++};
++
++void condqueue(struct condqueue *q)
++{
++	q->front = 0;
++	q->rear = 0;
++    q->size = 0;
++}
++uint *condpush(struct condqueue *q)
++{
++    uint *p = &q->arr[q->rear];
++	q->arr[q->rear] = 0;
++	q->rear = (q->rear+1)%100;
++	q->size++;
++    return p;
++}
++uint *condpop(struct condqueue *q)
++{
++    if(q->size == 0){
++        return 0;
++    }
++    uint *p = &q->arr[q->front];
++    q->arr[q->front] = 1;
++	q->front = (q->front+1)%100;
++	q->size--;
++    return p;
++}
++
 +struct thread_condvar {
-+    uint locked;
++    struct condqueue q;
 +}; 
 +
 +void
 +thread_cond_init(struct thread_condvar *cv)
 +{
-+    cv->locked = 0;
++    condqueue(&cv->q);
 +}
 +
 +void
 +thread_cond_wait(struct thread_condvar *cv, struct thread_mutex *m)
 +{
-+    __sync_lock_test_and_set(&cv->locked, 1);
++    uint *p = condpush(&cv->q);
 +    thread_mutex_unlock(m);
 +
-+    while(__sync_bool_compare_and_swap(&cv->locked, 1, 1)){
-+        thread_sleep(cv, cv->locked);
++    while(__sync_bool_compare_and_swap(p, 0, 0)){
++        thread_sleep(p, *p);
 +    }
 +
 +    thread_mutex_lock(m);
@@ -918,16 +953,21 @@ index 0000000..770c5df
 +thread_cond_signal(struct thread_condvar *cv)
 +{
 +    __sync_synchronize();
-+    __sync_bool_compare_and_swap(&cv->locked, 1, 0);
-+    thread_wakeup(cv, 0);
++    uint *p = condpop(&cv->q);
++    if(p != 0){
++        thread_wakeup(p, 0);
++    }
 +}
 +
 +void
 +thread_cond_broadcast(struct thread_condvar *cv)
 +{
 +    __sync_synchronize();
-+    __sync_bool_compare_and_swap(&cv->locked, 1, 0);
-+    thread_wakeup(cv, 1);
++    uint *p = condpop(&cv->q);
++    while(p != 0){
++        thread_wakeup(p, 1);
++        p = condpop(&cv->q);
++    }
 +}
 \ No newline at end of file
 diff --git a/user/thread_mutex.h b/user/thread_mutex.h
