@@ -1,15 +1,13 @@
 diff --git a/Makefile b/Makefile
-index 39a99d7..d9e41ac 100644
+index 39a99d7..a822569 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -132,6 +132,10 @@ UPROGS=\
+@@ -132,6 +132,8 @@ UPROGS=\
  	$U/_grind\
  	$U/_wc\
  	$U/_zombie\
 +	$U/_threads\
 +	$U/_producer_consumer\
-+	$U/_semtest\
-+	$U/_condtest\
  
  fs.img: mkfs/mkfs README $(UPROGS)
  	mkfs/mkfs fs.img README $(UPROGS)
@@ -616,61 +614,6 @@ index 9f69783..07e08dd 100644
  // mark a PTE invalid for user access.
  // used by exec for the user stack guard page.
  void
-diff --git a/user/condtest.c b/user/condtest.c
-new file mode 100644
-index 0000000..a867613
---- /dev/null
-+++ b/user/condtest.c
-@@ -0,0 +1,48 @@
-+#include "kernel/types.h"
-+#include "kernel/stat.h"
-+#include "user/user.h"
-+#include "user/thread_mutex.h"
-+#include "user/thread_condvar.h"
-+
-+struct thread_condvar cv;
-+struct thread_mutex mtx;
-+
-+void thread1(void *)
-+{
-+    printf("Started to work\n");
-+    printf("But could not\n");
-+    thread_mutex_lock(&mtx);
-+    thread_cond_signal(&cv);
-+    thread_cond_wait(&cv, &mtx);
-+    thread_mutex_unlock(&mtx);
-+    printf("Finish\n");
-+    thread_exit();
-+}
-+
-+void thread2(void *)
-+{
-+    thread_mutex_lock(&mtx);
-+    thread_cond_wait(&cv, &mtx);
-+    thread_mutex_unlock(&mtx);
-+    printf("I am working\n");
-+    for(int i=0; i<10; i++){
-+        printf("Waking in %d\n", i);
-+    }
-+    thread_mutex_lock(&mtx);
-+    thread_cond_signal(&cv);
-+    thread_mutex_unlock(&mtx);
-+    thread_exit();
-+}
-+
-+void main(void)
-+{
-+    thread_cond_init(&cv);
-+    thread_mutex_init(&mtx);
-+    void * stack1 = malloc(4096);
-+    void * stack2 = malloc(4096);
-+    int t1 = thread_create(thread1, 0, stack1);
-+    int t2 = thread_create(thread2, 0, stack2);
-+    thread_join(t1);
-+    thread_join(t2);
-+    exit(1);
-+}
-\ No newline at end of file
 diff --git a/user/producer_consumer.c b/user/producer_consumer.c
 new file mode 100644
 index 0000000..3f1aa16
@@ -803,88 +746,6 @@ index 0000000..3f1aa16
 +  	thread_join(thread2);	
 +
 +	exit(1);
-+}
-\ No newline at end of file
-diff --git a/user/semtest.c b/user/semtest.c
-new file mode 100644
-index 0000000..05e0bbc
---- /dev/null
-+++ b/user/semtest.c
-@@ -0,0 +1,75 @@
-+#include "kernel/types.h"
-+#include "user/user.h"
-+#include "user/thread_mutex.h"
-+#include "user/thread_condvar.h"
-+#include "user/thread_semaphore.h"
-+
-+
-+struct thread_sem p, q, r;
-+int c;
-+
-+void new_line() {
-+	for (int i = 0; i < 3; i++) {
-+		if (__sync_bool_compare_and_swap(&c, i, (i + 1) % 3)) {
-+			if (i == 2) {
-+		    printf("\n");
-+			}
-+			return;
-+		}
-+	}
-+}
-+
-+void thread_p(void*) {
-+  for(;;) {
-+    thread_sem_wait(&p);
-+    thread_sem_wait(&p);
-+    printf("p");
-+    new_line();
-+    thread_sem_post(&q);
-+    thread_sem_post(&r);
-+    // sleep(1);
-+  }
-+  thread_exit();
-+}
-+
-+void thread_q(void*) {
-+  for(;;) {
-+    thread_sem_wait(&q);
-+    thread_sem_wait(&q);
-+    printf("q");
-+    new_line();
-+    thread_sem_post(&r);
-+    thread_sem_post(&p);
-+    // sleep(1);
-+  }
-+  thread_exit();
-+}
-+
-+void thread_r(void*) {
-+  for(;;) {
-+    thread_sem_wait(&r);
-+    thread_sem_wait(&r);
-+    printf("r");
-+    new_line();
-+    thread_sem_post(&p);
-+    thread_sem_post(&q);
-+    // sleep(1);
-+  }
-+  thread_exit();
-+}
-+
-+int main() {
-+  thread_sem_init(&p, 2);
-+  thread_sem_init(&q, 2);
-+  thread_sem_init(&r, 2);
-+  void *s1 = malloc(4096);
-+  void *s2 = malloc(4096);
-+  void *s3 = malloc(4096);
-+  int th1 = thread_create(thread_p, 0, s1);
-+  int th2 = thread_create(thread_q, 0, s2);
-+  int th3 = thread_create(thread_r, 0, s3);
-+  thread_join(th1);
-+  thread_join(th2);
-+  thread_join(th3);
-+  exit(1);
 +}
 \ No newline at end of file
 diff --git a/user/thread_condvar.h b/user/thread_condvar.h
